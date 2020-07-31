@@ -1,0 +1,272 @@
+---
+title: "Beschreibung OWID Covid19-Datensatz"
+output:
+  pdf_document: 
+    keep_tex: yes
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(readr)
+library(plyr)
+library(dplyr)
+library(janitor)
+library(data.table)
+library(ggplot2)
+library(maps)
+library(tibble)
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE)
+
+OWID_covid_data <- read_csv("data/case_numbers/OWID_covid_data.csv",
+                              col_types = cols(date = col_datetime(format = "%Y-%m-%d"), extreme_poverty = col_double(), 
+                                               new_tests = col_double(), new_tests_per_thousand = col_double(), 
+                                               new_tests_smoothed = col_double(), new_tests_smoothed_per_thousand = col_double(), 
+                                               tests_units = col_factor(), total_tests = col_double(), 
+                                               total_tests_per_thousand = col_double())) %>% clean_names()
+
+
+ # Apple mobility: use of transportation (relative to baseline)
+  mobility_transportation <- read_csv("data/mobility_data/apple_mobility_trends/applemobilitytrends-2020-07-19.csv", 
+                                      col_types = cols(country = col_character(), `sub-region` = col_character()))
+  
+  # Google mobility: time spent at public places (relative to baseline)
+  mobility_public <- read_csv("data/mobility_data/google_mobility/Global_Mobility_Report.csv", 
+                              col_types = cols(census_fips_code = col_double(), date = col_date(format = "%Y-%m-%d"), 
+                                               iso_3166_2_code = col_character(), sub_region_1 = col_character(),
+                                               sub_region_2 = col_character())) %>% clean_names()
+  
+  
+  ## ---- Demographic datasets ---- ####
+  # Worldbank
+  health_systems <- read_csv("data/demographics/Health_systems.csv", na = c("", "NA", "NaN")) %>%
+    clean_names()
+  
+  
+  ## ---- government measurements ---- ####
+  # ACAPS: categorized government measures by country (timeseries)
+  gov_policies <- read_delim("data/gov_measurements/acaps_covid19_government_measures_dataset.csv", ";", escape_double = FALSE,
+                             col_types = cols(DATE_IMPLEMENTED = col_date(format = "%d.%m.%Y"), PCODE = col_double(),
+                                              LOG_TYPE = col_factor(), CATEGORY = col_factor()), trim_ws = TRUE) %>% 
+    select(-starts_with("X")) %>% 
+    clean_names()
+  
+  # # Humanitarian Data Exchange: school closures
+  # school_closures <- read_csv("data/gov_measurements/covid_impact_education.csv",
+  #                             col_types = cols(Date = col_date(format = "%d/%m/%Y"))) %>% clean_names()
+  
+```
+
+## Quellen und Variablen
+
+### Fallzahlen: OWID
+
+Es gibt 3 Hauptquellen für globale Corona-**Fallzahlen**:
+
+* WHO
+* Johns Hopkins Universität
+* ECDC (European Center for Desease Prevention and Control)
+
+Allerdings unterscheiden sich diese drei Quellen, sodass die berichteten Zahlen nicht vollkommen übereinstimmen. Das liegt zum einen an den verschiedenen Quellen welche sie ihrerseits heranziehen und auch an unterschiedlichen Defintionen. Der OWID Datensatz bezieht Fallzahlen von der **ECDC**. Ein Vergleich der drei Quellen und eine Erörterung warum die Daten der ECDC als verlässlichere Quelle gilt wird hier beschrieben: <https://ourworldindata.org/covid-sources-comparison>.
+
+
+OWID **erweitert** zusätzlich die Fallzahlen **mit Testzahlen** direkt von nationalen Behörden bzw. Instituten sowie **mit demograhpischen Risikofaktoren**. Insgesamt beinhaltet der OWID Datensatz 34 Variablen  Eine Übersicht bietet `glimpse(OWID_covid_data)`:
+
+```{r echo=T}
+glimpse(OWID_covid_data)
+```
+
+Eine grobe Recherche der verwendeten Quellen zeigt seriöse Quellen und macht insgesamt einen überzeugenden Eindruck.
+
+
+### Mobilität
+
+Google stellt anonymisierte Mobilitätsdaten zur Verfügung, welche für jedes Land die täglichen prozentualen Veränderungsraten der **Aufenhaltsdauer für verschiedene öffentliche Plätze** im Vergleich zu einer Baseline (14. Feburar) beschreiben.
+
+```{r, echo=T}
+glimpse(mobility_public)
+```
+
+Gleichzeitig stellt auch Apple anonymisierte Mobilitätsdaten zur Verfügung, welche beschreiben wie sich für jedes Land im Laufe der Zeit die Nutzung verschiedener **Transportmittel** verändert hat. Apple kategorisiert dabei drei verschiedene Transportmittel: driving, walking und transit.
+
+```{r, echo=T}
+glimpse(mobility_transportation[,c(1:10)])
+```
+
+
+### Regierungsmaßnahmen
+
+Von dem United Nations Office of Humanitarian Affairs wird ein Datensatz zur Vefügung gestellt, welcher sämtliche Regierungsmaßnahmen dokumentiert. Die Maßnahmen werden dabei datiert, kategorisiert und beschrieben.
+
+```{r, echo=T}
+glimpse(gov_policies)
+```
+
+### Gesundheitssysteme
+
+Zuletzt werden Daten der Weltbank über zu den Gesundheitssystem der Länder verwendet.
+
+```{r, echo=T}
+glimpse(health_systems)
+```
+<br />
+
+## Datenzusammenfassung
+
+### Zeitraum
+
+Der OWID Datensatz ist eine Zeitreihe und umfasst insgesamt 212 Länder. Die Länder berichteten ihren ersten Fall zu unterschiedlichen Zeitpunkten. Der erste Zeitstempel stammt vom 31.12.2019 aus China. Der letzte Zeitstempel im Datensatz ist der 21.07.2020. Das Balkendiagramm zeigt den Eintristtszeitpunkt des ersten Falls in den verschiedenen Ländern. Berücksichtigt wurden nur Länder in welchen der erste Fall vor mindestens 120 Tagen aufgetreten ist und welche mindestens 100 Gesamtfälle haben (135 Länder).
+
+``` {r echo=F}
+# filtered countries, only positive total case numbers
+owid_analysis <- OWID_covid_data %>%
+  group_by(location) %>% 
+  mutate(number_of_days = n(),last_total = max(total_cases)) %>%
+  ungroup() %>% 
+  filter(total_cases > 0, iso_code !="OWID_WRL", number_of_days > 120, last_total > 100) %>% 
+  group_by(location) %>% 
+  mutate(first_case_date = min(date),last_date = max(date)) %>% 
+  ungroup()
+
+# aggregate data (averages) by country
+owid_averages <- owid_analysis %>% select(-c("iso_code", "continent", "date", "tests_units")) %>% 
+  group_by(location) %>% 
+  summarize_all(mean, na.rm=TRUE) %>% 
+  arrange(first_case_date)
+
+owid_avg_topNtail <- rbind(head(owid_averages, 10), tail(owid_averages,10))
+```
+
+``` {r echo=F, out.width="100%"}
+
+ggplot(data=owid_avg_topNtail) +
+  geom_segment(aes(x=reorder(location, first_case_date), xend=factor(location, ordered = TRUE),
+                   y=first_case_date, yend=last_date)) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90)) +
+  labs(title = "Top and bottom 10 countries by days since first case",
+       x= "Country",
+       y= "Time frame")
+```
+
+
+### Vollständigkeit der Daten
+
+Es sind nicht alle Daten für jedes Land vollständig. Die folgende Tabelle zeigt für wie viele Länder Daten zu den jeweiligen Variablen fehlen.
+
+``` {r, echo=F, results='asis'}
+colSums(is.na(owid_averages)) %>%
+  as.data.frame() %>%
+  setnames(old=".", new="Missing_for_x_countries") %>% kable(format = "html", table.attr = "style='width:30%;'")
+
+  # identify countries with (without) reported tests
+  owid_reduced_country_vector <- owid_averages %>% filter(!is.na(total_tests), ) %>% .[['location']] %>% unique()
+  
+  # identify countries with clear (unclear) tests units
+  owid_reduced_country_vector_testunits <- owid_analysis %>%
+    filter(location %in% owid_reduced_country_vector,tests_units %in% c("tests performed", "people tested")) %>%
+    .[['location']] %>% unique()
+  
+  # filter: exclude countries without reported tests or unclear tests_units
+  owid_reduced <- owid_analysis %>% filter(location %in% (owid_reduced_country_vector_testunits))
+
+```
+<br />
+
+Man sieht, dass die Datenverfügbarkeit am kritischsten bei der Testanzahl ist. Wenn man nur Länder berücksichtigt, für welche sowohl Testzahlen verfügbar sind und die Einheit der Tests entweder `tests performed` oder `people tested` ist , bleiben `r length(owid_reduced_country_vector_testunits)` Länder übrig.
+
+```{r, echo=F, out.width="100%", message=FALSE, warning=FALSE}
+  # plot reduced_country vector on world map
+  WorldData <- map_data('world') %>% filter(region != "Antarctica") %>% fortify %>% 
+    mutate(region = recode(region, USA = "United States", UK = "United Kingdom"))
+  
+  ggplot() +
+    geom_map(data = WorldData, map = WorldData, aes(x = long, y = lat, group = group, map_id=region),
+             fill = "white", colour = "#7f7f7f", size = 0.5) +
+    geom_map(data=data.frame("country"=owid_reduced_country_vector_testunits,"included"=1), map=WorldData,
+             aes(fill=included, map_id=country),
+             color ="#7f7f7f") +
+    scale_y_continuous(breaks=c()) +
+    scale_x_continuous(breaks=c()) +
+    labs(title=paste0(length(owid_reduced_country_vector_testunits),
+                      " included countries from owid dataset after filtering for available test data"),
+         x ="",
+         y="",
+         fill="") +
+    theme(legend.position = "none")
+  
+```
+Die meisten Länder werden aufgrund von fehlenden Daten zu Tests herausgefiltert. **Diese folgenden Länder sind dabei aufgrund der unbekannten oder unpraktischen Einheit der Testzahlen herausgefiltert worden:**  
+`r setdiff(owid_reduced_country_vector, owid_reduced_country_vector_testunits)`
+<br />
+<br />
+
+
+Die Datenverfügbarkeit auf Länderebene hat sich nach dem Filtern stark verbessert. Lediglich das GDP ist als relevante Variable für ein Land nicht verfügbar. Dieses könnte man ausschließen. Weitere Variablen die häufig fehlen sind der Anteil der Bevölkerung mit Zugang zu Handwasch-Fazilitäten und Anteil der Bevökerung unter extremer Armut. Hier könnte man überlegen diese Variablen auszulassen.
+```{r echo=F, warning=FALSE, results='asis', out.width="30%"}
+# Data availability country level:
+  owid_reduced %>%
+    select(-c("iso_code", "continent", "date", "tests_units")) %>% 
+    group_by(location) %>% 
+    summarize_all(mean, na.rm=TRUE) %>% 
+    ungroup() %>% 
+    is.na() %>% 
+    colSums() %>% 
+    as.data.frame() %>% 
+    setnames(old=".", new="Missing_for_x_countries") %>% kable(caption="Datenverfügbarkeit auf Länderebene",
+                                                               format = "html", table.attr = "style='width:30%;'")
+```
+<br />
+<br />
+
+Da die Datenverfügbarkeit auf Länderbene nur durch die Existenz eines Durchschnitts überprüft wurde, ist noch nicht klar wie viele Werte insgesamt bei den einzelnen Variablen fehlen. Dazu soll die Übersicht auf Tagesebene mehr Aufschluss geben. Der gefilterte Datensatz (`r length(owid_reduced_country_vector_testunits)` Länder) hat ingesamt `r nrow(owid_reduced)` Beobachtungen.
+
+```{r echo=F, warning=F, results='asis'}
+  # Data availability daily level:
+  owid_reduced %>%
+    select(-c("iso_code", "continent", "date", "tests_units")) %>% 
+    is.na() %>% 
+    colSums() %>% 
+    as.data.frame() %>% 
+    setnames(old=".", new="Missing_for_x_observations") %>% kable(format = "html", table.attr = "style='width:30%;'",
+                                                               caption="Datenverfügbarkeit auf Tagesebene")
+```
+<br />
+<br />
+
+Da Testzahlen von einigen Ländern nur wöchentlich veröffentlicht werden, ist es plausibel dass bei der Variable `total_tests` mehr Werte fehlen als bei `new_tests_smoothed`. Anhand der letzteren Variable ließen sich gute Schätzungen über die Totale Testzahl berechnen. In der nächsten Tabelle soll geprüft werden, wieviele Werte für `new_tests_smoothed` bei jedem Land fehlen. Man würde hier erwarten, dass Testzahlen in dem Zeitraum zwischen dem ersten gemeldeten Fall und der ersten gemeldeten Teststatistik fehlen.
+```{r echo=F, warning=F, results='asis'}  
+  # identify date of first reported tests
+  test_date_vector <- owid_reduced %>% group_by(location) %>% 
+    filter(total_tests>0) %>%
+    mutate(first_test_date = min(date)) %>% 
+    summarise_all(mean) %>% .[['first_test_date']]
+  
+  # vector of first_case_date
+  case_date_vector <- owid_reduced %>% group_by(location) %>% 
+    summarise_all(mean) %>% .[['first_case_date']]
+  
+  # count missing new_tests_smooth for each country
+  owid_reduced %>% group_by(location) %>%
+    count(is.na(new_tests_smoothed)) %>%
+    filter(`is.na(new_tests_smoothed)` == TRUE) %>% as.data.table() %>%
+    .[,c("first_case_date","first_test_date") := list(case_date_vector, test_date_vector)] %>%
+    arrange(desc(n)) %>%
+    head(10) %>% 
+    kable(caption="Top 10 Anzahl fehlender Werte in [new_tests_smoothed]", align = "c")
+```
+<br />
+
+Man sieht dass die meisten Werte für Brasilien fehlen (140 Tage). Dieses  Ergebnis ist überraschend, weil Brasilien einen kürzeren Zeitraum zwischen erstem gemeldeten Fall und erster gemeldeter Teststatisitk hat. Dieses Ergebnis lässt sich dadurch erklären, dass Brasilien sich nicht an seinen wöchentlichen Turnus bei der Veröffentlichung gehalten hat und oft für einige Wochen keine Teststatistiken bereitstellte.  
+
+Man kann dieselbe Tabelle auch absteigenden sortieren nach `first_test_date`, welches Aufschluss darüber gibt ab welchen Zeitpunk Testzahlen für alle Länder gleichzeitig vorliegen. Eine Überlegung wäre dann, ob man den Datensatz auf diesen Zeitraum reduziert.
+
+```{r echo=F, warning=F, results='asis'}
+owid_reduced %>% group_by(location) %>%
+  count(is.na(new_tests_smoothed)) %>%
+  filter(`is.na(new_tests_smoothed)` == TRUE) %>% as.data.table() %>%
+  .[,c("first_case_date","first_test_date") := list(case_date_vector, test_date_vector)] %>%
+  arrange(desc(first_test_date)) %>%
+  head(10) %>% 
+  kable(caption="Top 10 späteste Teststatistik-Veröffentlichungen", align = "c")
+```
