@@ -7,6 +7,7 @@ library(ggplot2)
 library(maps)
 library(zoo)
 library(lubridate)
+library(Rfast)
 
 
 get_data <- function() {
@@ -25,7 +26,7 @@ get_data <- function() {
   
   # Apple mobility: use of transportation (relative to baseline)
   mobility_transportation <<- read_csv("data/mobility_data/apple_mobility_trends/applemobilitytrends-2020-07-19.csv", 
-                                      col_types = cols(country = col_character(), `sub-region` = col_character()))
+                                      col_types = cols(country = col_character(), `sub-region` = col_character()), guess_max = 5000)
   
   # Google mobility: time spent at public places (relative to baseline)
   mobility_public <<- read_csv("data/mobility_data/google_mobility/Global_Mobility_Report.csv", 
@@ -42,11 +43,11 @@ get_data <- function() {
   
   ## ---- government measurements ---- ####
   # ACAPS: categorized government measures by country (timeseries)
-  gov_policies <<- read_delim("data/gov_measurements/acaps_covid19_government_measures_dataset.csv", ";", escape_double = FALSE,
-                             col_types = cols(DATE_IMPLEMENTED = col_date(format = "%d.%m.%Y"), PCODE = col_double(),
-                                              LOG_TYPE = col_factor(), CATEGORY = col_factor()), trim_ws = TRUE) %>% 
-    select(-starts_with("X")) %>% 
-    clean_names()
+  # gov_policies <<- read_delim("data/gov_measurements/acaps_covid19_government_measures_dataset.csv", ";", escape_double = FALSE,
+  #                            col_types = cols(DATE_IMPLEMENTED = col_date(format = "%d.%m.%Y"), PCODE = col_double(),
+  #                                             LOG_TYPE = col_factor(), CATEGORY = col_factor()), trim_ws = TRUE) %>% 
+    # select(-starts_with("X")) %>% 
+    # clean_names()
   
   # # Humanitarian Data Exchange: school closures (bereits in ACAPS dataset enthalten)
   # school_closures <- read_csv("data/gov_measurements/covid_impact_education.csv",
@@ -103,6 +104,12 @@ merge_data <- function(){
     
     mob_public_reduced <- mobility_public %>%
       filter(is.na(sub_region_1)) %>%
+      mutate(retail_4d_change = rollmean(retail_and_recreation_percent_change_from_baseline, 4, fill = NA, align = "right"),
+             grocery_4d_change = rollmean(grocery_and_pharmacy_percent_change_from_baseline, 4, fill = NA, align = "right"),
+             parks_4d_change = rollmean(parks_percent_change_from_baseline, 4, fill = NA, align = "right"),
+             transit_stations_4d_change = rollmean(transit_stations_percent_change_from_baseline, 4, fill = NA, align = "right"),
+             workplace_4d_change = rollmean(workplaces_percent_change_from_baseline, 4, fill = NA, align = "right"),
+             residental_4d_change = rollmean(residential_percent_change_from_baseline, 4, fill = NA, align = "right")) %>% 
       select(-c(1,3,4,5,6))
       
   ## manipulate health data ----------------------------
@@ -119,18 +126,18 @@ merge_data <- function(){
     
   ## manipulate gov policy dataset -------------------
     
-    policies_reshaped <- gov_policies %>% 
-      select(iso, log_type, category, measure, comments, date_implemented) %>%
-      filter(is.Date(date_implemented), !is.na(date_implemented), grepl("^[A-Z]{3}$", iso)) %>%
-      as.data.table() %>%
-      .[log_type=="Introduction / extension of measures", log_type := "introduction"] %>% 
-      .[log_type=="Phase-out measure", log_type := "phase_out"] %>% 
-      dcast(iso + date_implemented ~ log_type + category, fun.aggregate=length) %>% 
-      clean_names()
-    
-      
-    
-    policies_counted <- policies_reshaped %>% .[,c(c(1,2),(ncol(.)-5):ncol(.))]
+    # policies_reshaped <- gov_policies %>% 
+    #   select(iso, log_type, category, measure, comments, date_implemented) %>%
+    #   filter(is.Date(date_implemented), !is.na(date_implemented), grepl("^[A-Z]{3}$", iso)) %>%
+    #   as.data.table() %>%
+    #   .[log_type=="Introduction / extension of measures", log_type := "introduction"] %>% 
+    #   .[log_type=="Phase-out measure", log_type := "phase_out"] %>% 
+    #   dcast(iso + date_implemented ~ log_type + category, fun.aggregate=length) %>% 
+    #   clean_names()
+    # 
+    #   
+    # 
+    # policies_counted <- policies_reshaped %>% .[,c(c(1,2),(ncol(.)-5):ncol(.))]
     
     
     full_corona_dataset <<- OWID_covid_data %>% 
@@ -139,27 +146,51 @@ merge_data <- function(){
       select(-continent) %>% as.data.table() %>% 
       merge(mob_transport_final, by.x=c("country", "date"), by.y=c("region", "date"), all.x = T) %>% 
       merge(mob_public_reduced, by.x = c("country", "date"), by.y = c("country_region", "date"), all.x = T) %>% 
-      merge(health_reduced, by.x="country", by.y="country_region", all.x = T) %>% 
-      merge(policies_reshaped, by.x=c("iso_code", "date"), by.y = c("iso", "date_implemented"), all.x = T) %>% 
-      group_by(iso_code) %>%
-      mutate(pubhealth_measures_count = cumsum(introduction_public_health_measures) - phase_out_public_health_measures,
-             socioeconomic_measures_count = cumsum(introduction_governance_and_socio_economic_measures) - phase_out_governance_and_socio_economic_measures,
-             socdistancing_measures_count = cumsum(introduction_social_distancing) - phase_out_social_distancing,
-             movement_restriction_count = cumsum(introduction_movement_restrictions) - phase_out_movement_restrictions,
-             lockdown_measure_count = cumsum(introduction_lockdown) - phase_out_lockdown,
-             humanitarian_measure_count = cumsum(introduction_humanitarian_exemption) - phase_out_humanitarian_exemption) %>%
-      ungroup() %>% 
-      select(-c(introduction_public_health_measures, phase_out_public_health_measures, introduction_governance_and_socio_economic_measures,
-                phase_out_governance_and_socio_economic_measures, introduction_social_distancing, phase_out_social_distancing,
-                introduction_movement_restrictions, phase_out_movement_restrictions, introduction_lockdown, phase_out_lockdown,
-                introduction_humanitarian_exemption, phase_out_humanitarian_exemption))
-
-    
-    
-  
-    
-    
+      merge(health_reduced, by.x="country", by.y="country_region", all.x = T)
 }
+
+
+
+calc_30d_avg <- function() {
+  
+  d30_avg_dataset <- full_corona_dataset %>% 
+    filter(total_cases>0) %>% 
+    group_by(country) %>% 
+    mutate(day_counter = date-date[1]) %>% 
+    filter(day_counter<=30) %>% 
+    mutate(tests_cumulated = total_tests[max(which(!is.na(total_tests)))]) %>% .[,c(1:12,51,13:50)]
+}
+
+
+calc_60d_avg <- function() {
+  
+  d60_avg_dataset <- full_corona_dataset %>% 
+    filter(total_cases>0) %>% 
+    group_by(country) %>% 
+    mutate(day_counter = date-date[1], obs_number = row_number()) %>% 
+    filter(day_counter<=60) %>%
+    mutate(last_total_tests_per_thousand = total_tests_per_thousand[max(which(!is.na(total_tests_per_thousand)))]) %>%
+    mutate(avg_driving_change = mean(driving_4d_change, na.rm = T),
+           avg_transit_change = mean(transit_4d_change, na.rm = T),
+           avg_walking_change = mean(walking_4d_change, na.rm =T),
+           avg_retail_change = mean(retail_4d_change, na.rm = T),
+           avg_grocery_change = mean(grocery_4d_change, na.rm = T),
+           avg_parks_change = mean(parks_4d_change, na.rm = T),
+           avg_transit_station_change = mean(transit_stations_4d_change, na.rm = T),
+           avg_workplace_change = mean(workplace_4d_change, na.rm = T),
+           avg_residental_change = mean(residental_4d_change, na.rm = T)) %>% 
+    filter(row_number()==n()) %>%
+    ungroup() %>% 
+    select(country, date, total_cases_per_million, total_deaths_per_million, last_total_tests_per_thousand, tests_units,
+           stringency_index, population, population_density, median_age, aged_65_older, aged_70_older, gdp_per_capita, extreme_poverty,
+           cardiovasc_death_rate, diabetes_prevalence, female_smokers, male_smokers, handwashing_facilities, hospital_beds_per_thousand,
+           life_expectancy, starts_with("avg_"))
+  
+  d60_completeness <- d60_avg_dataset %>% 
+    is.na() %>% colSums() %>% as.data.frame()
+}
+
+
 
 
 check_data <- function(){
@@ -169,24 +200,24 @@ check_data <- function(){
   print("Checking OWID dataset...")
   
   # filter countries: first case at least 120 days ago and minimum 100 total cases
-  owid_analysis <- OWID_covid_data %>%
-    group_by(location) %>% 
+  availabilty_test <- full_corona_dataset %>%
+    group_by(country) %>% 
     mutate(number_of_days = n(),last_total = max(total_cases)) %>%
     ungroup() %>% 
     filter(total_cases > 0, iso_code !="OWID_WRL", number_of_days > 120, last_total > 100) %>% 
-    group_by(location) %>% 
+    group_by(country) %>% 
     mutate(first_case_date = min(date),last_date = max(date)) %>% 
     ungroup()
   
   # aggregate data (averages) by country
-  owid_averages <- owid_analysis %>% select(-c("iso_code", "continent", "date", "tests_units")) %>% 
-    group_by(location) %>% 
+  availabilty_averages <- availabilty_test %>% select(-c("iso_code", "date", "tests_units")) %>% 
+    group_by(country) %>% 
     summarize_all(mean, na.rm=TRUE) %>% 
     arrange(first_case_date)
   
-  n_country_firstfilter <- owid_averages %>% nrow()
-  earliest_date_firstfilter <- min(owid_averages$first_case_date)
-  latest_date_firstfilter <- max(owid_averages$last_date)
+  n_country_firstfilter <- availabilty_averages %>% nrow()
+  earliest_date_firstfilter <- min(availabilty_averages$first_case_date)
+  latest_date_firstfilter <- max(availabilty_averages$last_date)
   
   print(paste0("Frühester Zeitstempel in OWID-covid19: ", earliest_date_firstfilter))
   print(paste0("Letzter Zeitstempel in OWID-covid19: ", latest_date_firstfilter))
@@ -195,13 +226,13 @@ check_data <- function(){
   
   
   # identify countries with (without) reported tests
-  owid_reduced_country_vector <- owid_averages %>% filter(!is.na(total_tests), ) %>% .[['location']] %>% 
-    droplevels() %>% unique()
+  owid_reduced_country_vector <- availabilty_averages %>% filter(!is.na(total_tests), ) %>% .[['country']] %>% 
+    unique()
   
   # identify countries with clear (unclear) tests units
-  owid_reduced_country_vector_testunits <- owid_analysis %>%
-    filter(location %in% owid_reduced_country_vector,tests_units %in% c("tests performed", "people tested")) %>%
-    .[['location']] %>% droplevels() %>% unique()
+  owid_reduced_country_vector_testunits <- availabilty_test %>%
+    filter(country %in% owid_reduced_country_vector,tests_units %in% c("tests performed", "people tested")) %>%
+    .[['country']] %>% droplevels() %>% unique()
   
   # filter: exclude countries without reported tests or unclear tests_units
   owid_reduced <<- owid_analysis %>% filter(location %in% (owid_reduced_country_vector_testunits))
